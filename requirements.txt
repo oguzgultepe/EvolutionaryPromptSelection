@@ -1,0 +1,6 @@
+accelerate
+bitsandbytes
+sentencepiece
+torch
+transformers
+wikipedia
