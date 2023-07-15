@@ -72,10 +72,10 @@ class PWS:
         tool_calls = planner_response["tool_calls"]
 
         # Work
-        worker_evidences = self.worker.run(tool_calls)
+        evidences = self.worker.run(tool_calls)
 
         # Solve
-        output = self.solver.run(task, worker_evidences)
+        output = self.solver.run(task, plans, evidences)
 
         wall_time = time.time() - st
 
@@ -97,3 +97,4 @@ class EPS:
     def select_examples(self, task, num_examples):
         raise NotImplementedError
         return examples, tools
+

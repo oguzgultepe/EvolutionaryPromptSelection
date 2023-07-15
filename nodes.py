@@ -22,19 +22,19 @@ class LLMNode(Node):
     def __init__(self, model):
         self.model = model
 
-    def run(self, inputs):
+    def call_llm(self, prompt):
         """Calls the underlying LLM with the given inputs
         Parameters:
         ------------
-        inputs: str
-            inputs for the LLM
+        prompt: str
+            prompt for the LLM
 
         Returns:
         ------------
         response: str
             LLM response
         """
-        response = self.model.generate(inputs)
+        response = self.model.generate(prompt)
         return response
 
 class Planner(LLMNode):
@@ -60,13 +60,13 @@ class Planner(LLMNode):
         planner_response: dict(str:obj)
             Planner response contains the plans and the evidences
         """
-        prompt = generate_prompt(task, examples, tools)
-        response = super.run(prompt)
-        plans, tool_calls = parse_response(response)
+        prompt = self.generate_prompt(task, examples, tools)
+        response = self.call_llm(prompt)
+        plans, tool_calls = self.parse_response(response)
         planner_response = {'plans': plans, 'tool_calls': tool_calls}
         return planner_response
 
-    def generate_prompt(task, examples, tools):
+    def generate_prompt(self, task, examples, tools):
         """Generates a planner prompt for the given task, examples and tools
         Parameters:
         ------------
@@ -83,13 +83,13 @@ class Planner(LLMNode):
             planner prompt
         """
         prompt = self.prefix
-        prompt += generate_worker_prompt(tools)
-        prompt += examples.join('\n')
+        prompt += self.generate_worker_prompt(tools)
+        prompt += '\n'.join(examples)
         prompt += self.suffix
         prompt += task + '\n'
         return prompt
 
-    def generate_worker_prompt(tools):
+    def generate_worker_prompt(self, tools):
         """Generates a worker prompt for given tools
         Parameters:
         ------------
@@ -106,7 +106,7 @@ class Planner(LLMNode):
             prompt += f"{tool}[input]: {description}\n"
         return prompt + "\n"
 
-    def parse_response(response):
+    def parse_response(self, response):
         """Parse the planner response and return plans and evidences dictionary
         Parameters:
         ------------
@@ -136,6 +136,9 @@ class Planner(LLMNode):
 
 class WikipediaWorker(Node):
     """Worker that searches Wikipedia"""
+    def __init__(self):
+        pass
+
     def run(self, inputs):
         """Searches Wikipedia for the given inputs and returns the first
         paragraph of the first page in search results
@@ -152,7 +155,7 @@ class WikipediaWorker(Node):
         page = wikipedia.search(inputs, results=1)[0]
         content = wikipedia.page(page, auto_suggest=False).content
         evidence = content.split('\n\n', 1)[0]
-    return evidence
+        return evidence
 
 class LLMWorker(LLMNode):
     """LLM node to be used for worker calls"""
@@ -169,7 +172,7 @@ class LLMWorker(LLMNode):
             Cleaned response from the tool call
         """
         prompt = f"Respond in short directly with no extra words.\n\n{inputs}"
-        response = super.run(prompt)
+        response = self.call_llm(prompt)
         evidence = response.strip("\n")
         return evidence
 
@@ -216,14 +219,14 @@ class Worker(Node):
                 case _:
                     evidences[e] = "No evidence found."
 
-            return evidences
+        return evidences
 
 class Solver(LLMNode):
     """Solver node that solves tasks for given plans and evidences"""
-        def __init__(self, model):
-            self.prefix = SOLVER_PROMPT['prefix']
-            self.suffix = SOLVER_PROMPT['suffix']
-            self.model = model
+    def __init__(self, model):
+        self.prefix = SOLVER_PROMPT['prefix']
+        self.suffix = SOLVER_PROMPT['suffix']
+        self.model = model
 
     def run(self, task, plans, evidences):
         """Solve the task based on the given plans and evidences
@@ -248,6 +251,6 @@ class Solver(LLMNode):
             prompt += f"{plans[i]}\nEvidence:\n{evidences[e]}\n"
         prompt += self.suffix
         prompt += task + '\n'
-        output = super.run(prompt)
+        output = self.call_llm(prompt)
         return output
 
