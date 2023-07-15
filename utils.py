@@ -84,7 +84,7 @@ class PWS:
 
         if verbose:
             pws_response["planner_response"] = planner_response
-            pws_response["worker_response"] = worker_evidences
+            pws_response["worker_response"] = evidences
 
         return pws_response
 

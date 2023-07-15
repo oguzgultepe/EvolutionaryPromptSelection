@@ -209,7 +209,11 @@ class Worker(Node):
             # Find variables in input and replace with previous evidences
             for var in re.findall(r"#E\d+", tool_input):
                 if var in evidences:
-                    tool_input = tool_input.replace(var, f"[{evidences[var]}]")
+                    try:
+                        evidence = evidences[var]
+                    except KeyError:
+                        evidence = "No evidence found."
+                    tool_input = tool_input.replace(var, f"[{evidence}]")
 
             match tool:
                 case "Wikipedia":
@@ -248,7 +252,12 @@ class Solver(LLMNode):
         prompt += task + '\n'
         for i in range(len(plans)):
             e = f"#E{i + 1}"
-            prompt += f"{plans[i]}\nEvidence:\n{evidences[e]}\n"
+            plan = plans[i]
+            try:
+              evidence = evidences[e]
+            except KeyError:
+              evidence = "No evidence found."
+            prompt += f"{plan}\nEvidence:\n{evidence}\n"
         prompt += self.suffix
         prompt += task + '\n'
         output = self.call_llm(prompt)
