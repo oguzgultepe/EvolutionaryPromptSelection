@@ -2,9 +2,20 @@ import re
 import time
 import torch
 from transformers import GenerationConfig, LlamaForCausalLM, LlamaTokenizer
+from transformers import StoppingCriteria, StoppingCriteriaList
 
 from nodes import Planner, Worker, Solver
 
+class ParagraphStoppingCriteria(StoppingCriteria):
+    """Stops generating after double newline."""
+    def __init__(self, newline_id):
+        self.newline = newline_id
+
+    def __call__(self, input_ids, scores):
+        if input_ids[0][-1] == self.newline \
+        and input_ids[0][-2] == self.newline:
+            return True
+        return False
 
 class LanguageModel:
     """Language model wrapper to be used in nodes"""
@@ -13,13 +24,16 @@ class LanguageModel:
         self.model = LlamaForCausalLM.from_pretrained(
             model_path, torch_dtype=torch.float16, device_map='auto')
         self.generation_config = generation_config
+        newline_id = self.tokenizer.encode('\n')[-1]
+        self.stopping_criteria = StoppingCriteriaList(
+            [ParagraphStoppingCriteria(newline_id)])
 
     def generate(self, prompt):
         """Generate text based on given prompt
         Parameters:
         ------------
         prompt: str
-            Prompt for thee LLM
+            Prompt for the LLM
 
         Returns:
         ------------
@@ -34,7 +48,8 @@ class LanguageModel:
         with torch.no_grad():
             rest = self.model.generate(
                 input_ids=tokens,
-                generation_config = self.generation_config
+                generation_config=self.generation_config,
+                stopping_criteria=self.stopping_criteria
             )
         output = rest[0][length:]
         llm_response = self.tokenizer.decode(output, skip_special_tokens=True)

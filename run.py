@@ -15,7 +15,7 @@ generation_config = GenerationConfig(
     top_k=TOP_K,
     top_p=TOP_P,
     repetition_penalty=REPETITION_PENALTY,
-    max_new_tokens = MAX_NEW_TOKENS
+    max_new_tokens=MAX_NEW_TOKENS
 )
 
 model = LanguageModel(MODEL_PATH, generation_config=generation_config)

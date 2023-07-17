@@ -84,9 +84,9 @@ class Planner(LLMNode):
         """
         prompt = self.prefix
         prompt += self.generate_worker_prompt(tools)
-        prompt += '\n'.join(examples)
+        prompt += '\n\n'.join(examples)
         prompt += self.suffix
-        prompt += task + '\n'
+        prompt += f"Question: {task}\n"
         return prompt
 
     def generate_worker_prompt(self, tools):
@@ -152,9 +152,12 @@ class WikipediaWorker(Node):
         evidence: str
             First paragraph of the first page from the search results
         """
-        page = wikipedia.search(inputs, results=1)[0]
-        content = wikipedia.page(page, auto_suggest=False).content
-        evidence = content.split('\n\n', 1)[0]
+        pages = wikipedia.search(inputs, results=1)
+        if pages:
+            content = wikipedia.page(pages[0], auto_suggest=False).content
+            evidence = content.split('\n\n', 1)[0]
+        else:
+            evidence = "No evidence found."
         return evidence
 
 class LLMWorker(LLMNode):
@@ -171,7 +174,8 @@ class LLMWorker(LLMNode):
         evidence: str
             Cleaned response from the tool call
         """
-        prompt = f"Respond in short directly with no extra words.\n\n{inputs}"
+        prompt = f"Respond in short directly with no extra words."
+        prompt = f"{prompt}\n\n{inputs}\n\n"
         response = self.call_llm(prompt)
         evidence = response.strip("\n")
         return evidence
@@ -259,7 +263,7 @@ class Solver(LLMNode):
               evidence = "No evidence found."
             prompt += f"{plan}\nEvidence:\n{evidence}\n"
         prompt += self.suffix
-        prompt += task + '\n'
+        prompt += task + '\n\n'
         output = self.call_llm(prompt)
         return output
 
