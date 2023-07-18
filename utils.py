@@ -1,6 +1,7 @@
 import re
 import time
 import torch
+from numpy.random import choice
 from transformers import GenerationConfig, LlamaForCausalLM, LlamaTokenizer
 from transformers import StoppingCriteria, StoppingCriteriaList
 
@@ -62,16 +63,14 @@ class PWS:
         self.worker = Worker(model=model)
         self.solver = Solver(model=model)
 
-    def run(self, task, examples, tools, verbose=False):
-        """Run the PWS on a given task based on provided examples/tools
+    def run(self, task, examples, verbose=False):
+        """Run the PWS on a given task based on provided examples
         Parameters:
         ------------
         task: str
             Task for which the PWS is to be run
         examples: list(str)
             Examples related to the task for the fewshot prompt
-        tools: dict(str:str)
-            Tools that can be used to solve the task
 
         Returns:
         ------------
@@ -82,7 +81,7 @@ class PWS:
 
         st = time.time()
         # Plan
-        planner_response = self.planner.run(task, examples, tools)
+        planner_response = self.planner.run(task, examples)
         plans = planner_response["plans"]
         tool_calls = planner_response["tool_calls"]
 
@@ -103,13 +102,65 @@ class PWS:
 
         return pws_response
 
-
 class EPS:
     """ Evolutionary Prompt Selection"""
-    #TODO
-    def __init__(self):
-        raise NotImplementedError
-    def select_examples(self, task, num_examples):
-        raise NotImplementedError
-        return examples, tools
+    # TODO add comments
+    def __init__(self, index, embedding_model, similar_pool_size=10, instructive_pool_size=10):
+        self.index = index
+        index_stats = self.index.describe_index_stats()
+        self.index_size = index_stats['total_vector_count']
+        self.dimension = index_stats['dimension']
+        self.embedding_model = embedding_model
+        self.similar_pool_size = similar_pool_size
+        self.instructive_pool_size = instructive_pool_size
+        self.most_instructive = []
+        self.set_most_instructive()
+
+    def set_most_instructive(self):
+        batch_size = 1000
+        score = lambda entry: entry['metadata']['score']
+        for i in range(0, self.index_size, batch_size):
+            # find end of batch
+            i_end = min(i+batch_size, self.index_size)
+            # create IDs batch
+            ids = list(range(i, i_end))
+            batch = self.index.query(self.dimension * [0],
+                                     top_k=batch_size,
+                                     filter={'id':{"$in": ids}},
+                                     include_metadata=True)['matches']
+            batch_sorted = sorted(batch + self.most_instructive, key=score, reverse=True)
+            self.most_instructive = batch_sorted[:self.instructive_pool_size]
+
+    def select_examples(self, task, num_examples=3):
+        task_embedding = self.embedding_model.encode(task).tolist()
+        most_similar = self.index.query(task_embedding,
+                                        top_k=self.similar_pool_size,
+                                        include_metadata=True)['matches']
+        instructive_ids = [entry['metadata']['id'] for entry in self.most_instructive]
+        most_instructive = self.index.query(task_embedding,
+                                            top_k=self.instructive_pool_size,
+                                            filter={'id':{"$in": instructive_ids}},
+                                            include_metadata=True)['matches']
+        pool = most_similar + most_instructive
+        weights = [(entry['score'] + 1.0) * entry['metadata']['score'] for entry in pool]
+        probabilities = list(map(lambda weight: weight/sum(weights), weights))
+        sample_ids = choice(range(len(pool)), 3, replace=False, p=probabilities)
+        examples = [pool[i] for i in sample_ids]
+        return examples
+
+    def update_score(self, entry):
+        score = lambda entry: entry['metadata']['score']
+        self.index.update(id=entry['id'], set_metadata={"score": score(entry)})
+        if score(entry) > score(self.most_instructive[-1]):
+            self.most_instructive.append(entry)
+            self.most_instructive = sorted(self.most_instructive, key=score, reverse=True)
+            self.most_instructive[:self.instructive_pool_size]
+
+    def upsert_entry(self, metadata):
+        entry_id = self.index_size
+        embedding = self.embedding_model.encode(metadata['question'])
+        metadata['id'] = entry_id
+        metadata['score'] = 1
+        index.upsert((str(entry_id), embedding, metadata))
+        self.index_size += 1
 

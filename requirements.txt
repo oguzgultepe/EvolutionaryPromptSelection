@@ -1,6 +1,9 @@
 accelerate
 bitsandbytes
+datasets
+pinecone-client[grpc]
 sentencepiece
+sentence-transformers
 torch
 transformers
 wikipedia

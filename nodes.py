@@ -8,6 +8,8 @@ with open(os.path.join(PROMPTS_DIR, 'planner.json'), 'r') as f:
     PLANNER_PROMPT = json.load(f)
 with open(os.path.join(PROMPTS_DIR, 'solver.json'), 'r') as f:
     SOLVER_PROMPT = json.load(f)
+with open(os.path.join(PROMPTS_DIR, 'tools.json'), 'r') as f:
+    TOOLS_PROMPT = json.load(f)
 
 class Node:
     """Basic node class"""
@@ -42,69 +44,58 @@ class Planner(LLMNode):
     def __init__(self, model):
         self.prefix = PLANNER_PROMPT['prefix']
         self.suffix = PLANNER_PROMPT['suffix']
+        self.tools = TOOLS_PROMPT
         self.model = model
 
-    def run(self, task, examples, tools):
+    def run(self, task, examples):
         """Generate plans for the given task, examples and tools
         Parameters:
         ------------
         task: str
             Task for which the plan is to be generated
-        examples: list(str)
+        examples: list(dict)
             Examples related to the task for the fewshot prompt
-        tools: dict(str:str)
-            Tools that can be used to solve the task
 
         Returns:
         ------------
         planner_response: dict(str:obj)
             Planner response contains the plans and the evidences
         """
-        prompt = self.generate_prompt(task, examples, tools)
+        prompt = self.generate_prompt(task, examples)
         response = self.call_llm(prompt)
         plans, tool_calls = self.parse_response(response)
-        planner_response = {'plans': plans, 'tool_calls': tool_calls}
+        planner_response = {'plans': plans, 'tool_calls': tool_calls,
+                            'text': response}
         return planner_response
 
-    def generate_prompt(self, task, examples, tools):
+    def generate_prompt(self, task, examples):
         """Generates a planner prompt for the given task, examples and tools
         Parameters:
         ------------
         task: str
             Task for which the plan is to be generated
-        examples: list(str)
+        examples: list(dict)
             Examples related to the task for the fewshot prompt
-        tools: dict(str:str)
-            Tools that can be used to solve the task
 
         Returns:
         ------------
         prompt: str
             planner prompt
         """
+        tools = {tool: self.tools[tool] for example in examples
+                 for tool in example['tools']}
+
         prompt = self.prefix
-        prompt += self.generate_worker_prompt(tools)
-        prompt += '\n\n'.join(examples)
+        prompt += "Tools can be one of the following:\n"
+        for tool, description in tools.items():
+            prompt += f"{tool}[input]: {description}\n"
+        prompt += '\n'
+        for example in examples:
+            prompt += f"Question: {example['question']}\n"
+            prompt += f"{example['plan']}\n\n"
         prompt += self.suffix
         prompt += f"Question: {task}\n"
         return prompt
-
-    def generate_worker_prompt(self, tools):
-        """Generates a worker prompt for given tools
-        Parameters:
-        ------------
-        tools: dict(str:str)
-            contains the names and descriptions of the tools
-
-        Returns:
-        ------------
-        prompt: str
-            worker prompt
-        """
-        prompt = "Tools can be one of the following:\n"
-        for tool, description in tools.items():
-            prompt += f"{tool}[input]: {description}\n"
-        return prompt + "\n"
 
     def parse_response(self, response):
         """Parse the planner response and return plans and evidences dictionary
