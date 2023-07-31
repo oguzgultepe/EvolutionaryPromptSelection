@@ -11,6 +11,7 @@ with open(os.path.join(PROMPTS_DIR, 'solver.json'), 'r') as f:
 with open(os.path.join(PROMPTS_DIR, 'tools.json'), 'r') as f:
     TOOLS_PROMPT = json.load(f)
 
+
 class Node:
     """Basic node class"""
     def __init__(self):
@@ -19,10 +20,15 @@ class Node:
     def run (self, inputs):
         raise NotImplementedError
 
+
 class LLMNode(Node):
     """A node that is based on an LLM"""
     def __init__(self, model):
         self.model = model
+        self.system_tag = model.system_tag
+        self.user_tag = model.user_tag
+        self.ai_tag = model.ai_tag
+        self.stops = ['.', '\n']
 
     def call_llm(self, prompt):
         """Calls the underlying LLM with the given inputs
@@ -36,16 +42,18 @@ class LLMNode(Node):
         response: str
             LLM response
         """
-        response = self.model.generate(prompt)
+        response = self.model.generate(prompt, self.stops)
         return response
+
 
 class Planner(LLMNode):
     """Planner node for making plans within the PWS framework"""
     def __init__(self, model):
+        super().__init__(model)
+        self.stops = ['\n\n']
         self.prefix = PLANNER_PROMPT['prefix']
         self.suffix = PLANNER_PROMPT['suffix']
         self.tools = TOOLS_PROMPT
-        self.model = model
 
     def run(self, task, examples):
         """Generate plans for the given task, examples and tools
@@ -65,7 +73,7 @@ class Planner(LLMNode):
         response = self.call_llm(prompt)
         plans, tool_calls = self.parse_response(response)
         planner_response = {'plans': plans, 'tool_calls': tool_calls,
-                            'text': response}
+                            'text':response}
         return planner_response
 
     def generate_prompt(self, task, examples):
@@ -85,16 +93,16 @@ class Planner(LLMNode):
         tools = {tool: self.tools[tool] for example in examples
                  for tool in example['tools']}
 
-        prompt = self.prefix
+        prompt = f"{self.system_tag}{self.prefix}\n"
         prompt += "Tools can be one of the following:\n"
         for tool, description in tools.items():
             prompt += f"{tool}[input]: {description}\n"
-        prompt += '\n'
+        prompt += f"{self.suffix}\n\n"
         for example in examples:
-            prompt += f"Question: {example['question']}\n"
-            prompt += f"{example['plan']}\n\n"
-        prompt += self.suffix
-        prompt += f"Question: {task}\n"
+            prompt += f"{self.user_tag}{example['question'].strip()}\n\n"
+            prompt += f"{self.ai_tag}{example['plan'].strip()}\n\n"
+        prompt += f"{self.user_tag}{task.strip()}\n\n"
+        prompt += self.ai_tag
         return prompt
 
     def parse_response(self, response):
@@ -116,6 +124,8 @@ class Planner(LLMNode):
         for line in response.splitlines():
             if line.startswith("Plan:"):
                 plans.append(line)
+            elif len(line) < 3:
+                continue
             elif line.startswith("#") and line[1] == "E" and line[2].isdigit():
                 e, tool_call = line.split("=", 1)
                 e, tool_call = e.strip(), tool_call.strip()
@@ -124,6 +134,7 @@ class Planner(LLMNode):
                 else:
                     tool_calls[e] = "No evidence found"
         return plans, tool_calls
+
 
 class WikipediaWorker(Node):
     """Worker that searches Wikipedia"""
@@ -151,8 +162,9 @@ class WikipediaWorker(Node):
             evidence = "No evidence found."
         return evidence
 
+
 class LLMWorker(LLMNode):
-    """LLM node to be used for worker calls"""
+    """LLM node to be used for worker calls"""    
     def run(self, inputs):
         """Run the LLM as a tool call
         Parameters:
@@ -165,11 +177,12 @@ class LLMWorker(LLMNode):
         evidence: str
             Cleaned response from the tool call
         """
-        prompt = f"Respond in short directly with no extra words."
-        prompt = f"{prompt}\n\n{inputs}\n\n"
+        prompt = f"{self.system_tag}Directly answer the following question with no extra words.\n\n"
+        prompt += f"{self.user_tag}{inputs.strip()}\n\n{self.ai_tag}"
         response = self.call_llm(prompt)
-        evidence = response.strip("\n")
+        evidence = response.strip()
         return evidence
+
 
 class Worker(Node):
     """Worker node that calls appropriate workers for each tool call"""
@@ -220,12 +233,13 @@ class Worker(Node):
 
         return evidences
 
+
 class Solver(LLMNode):
     """Solver node that solves tasks for given plans and evidences"""
     def __init__(self, model):
+        super().__init__(model)
         self.prefix = SOLVER_PROMPT['prefix']
         self.suffix = SOLVER_PROMPT['suffix']
-        self.model = model
 
     def run(self, task, plans, evidences):
         """Solve the task based on the given plans and evidences
@@ -243,18 +257,16 @@ class Solver(LLMNode):
         output: str
             Solution generated based on the given plans and evidences
         """
-        prompt = self.prefix
-        prompt += task + '\n'
+        prompt = f"{self.system_tag}{self.prefix}\n\n"
+        prompt += f"{self.user_tag}{task.strip()}\n"
         for i in range(len(plans)):
             e = f"#E{i + 1}"
             plan = plans[i]
             try:
-              evidence = evidences[e]
+                evidence = evidences[e]
             except KeyError:
-              evidence = "No evidence found."
-            prompt += f"{plan}\nEvidence:\n{evidence}\n"
-        prompt += self.suffix
-        prompt += task + '\n\n'
+                evidence = "No evidence found."
+            prompt += f"{plan}\nEvidence: {evidence}\n"
+        prompt += f"{self.suffix + task.strip()}\n\n{self.ai_tag}"
         output = self.call_llm(prompt)
         return output
-
