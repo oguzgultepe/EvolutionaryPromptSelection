@@ -17,13 +17,13 @@ INDEX_NAME = 'plans'
 
 EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
 
-MODEL_PATH = "NousResearch/Nous-Hermes-Llama2-13b"
-SYSTEM_TAG = "### Instruction:\n"
-USER_TAG = "### Input:\n"
-AI_TAG = "### Response:\n"
+MODEL_PATH = "stabilityai/StableBeluga-13B"
+SYSTEM_TAG = "### System:\n"
+USER_TAG = "### User:\n"
+AI_TAG = "### Assistant:\n"
 
 LOAD_IN_8BIT = True
-HF_TOKEN = user_secrets.get_secret("HF_TOKEN")
+HF_TOKEN = secrets["HF_TOKEN"]
 
 TEMPERATURE = 0.5
 TOP_K = 50
@@ -65,37 +65,47 @@ prompter = EPS(index, embedding_model, SIMILAR_POOL_SIZE, INSTRUCTIVE_POOL_SIZE)
 agent = PWS(model)
 
 sanitize = lambda text: text.strip().lower().translate(str.maketrans('', '', string.punctuation))
+extractor = Extractor(model)
 em = []
-
+prompt_data = []
+instance_counter = 0
 for instance in tqdm(dataset['train']):
+    if instance_counter and not instance_counter % 100:
+        total_acc = sum(em) / len(em)
+        last_100_acc = sum(em[-100:]) / 100
+        print(f"Processed instances: {instance_counter}")
+        print(f"\t{total_acc=}\t{last_100_acc=}")
+        results = {'em': em[-100:], 'prompt_data': prompt_data[-100:]}
+        batch_number = instance_counter / 100
+        with open(f"results_batch_{batch_number}.json", "w") as f:
+            json.dump(results, f)
+
+    instance_counter += 1
     question = instance['question']
     list_of_candidates = [sanitize(alias) for alias in instance["answer"]["aliases"]]
-
     selection = prompter.select_examples(question, NUM_EXAMPLES)
+    prompt_data.append([(entry['id'], entry['score']) for entry in selection])
     examples = [entry['metadata'] for entry in selection]
     response = agent.run(question, examples, verbose=True)
     answer = sanitize(response['output'])
 
-    if answer in list_of_candidates:
-        em.append(True)
-
-        for entry in selection:
-            entry['metadata']['score'] += 1
-            prompter.update_score(entry)
-
-        tools = set()
-        for calls in response['planner_response']['tool_calls'].values():
-            tool = calls.split('[', 1)[0]
-            tools.add(tool)
-        tools = list(tools)
-        new_entry_metadata = {'question': question,
-                              'plan': response['planner_response']['text'],
-                              'tools': tools,
-                              'dataset_name': DATASET_NAME,
-        }
-        prompter.upsert_entry(new_entry_metadata)
-    else:
-        em.append(False)
-
-with open('results.json', 'w') as f:
-    json.dump(em, f)
+    if answer not in list_of_candidates:
+        extracted = sanitize(extractor(response['output'], question))
+        if extracted not in list_of_candidates:
+            em.append(False)
+            continue
+    em.append(True)
+    for entry in selection:
+        entry['metadata']['score'] += 1
+        prompter.update_score(entry)
+    tools = set()
+    for calls in response['planner_response']['tool_calls'].values():
+        tool = calls.split('[', 1)[0]
+        tools.add(tool)
+    tools = list(tools)
+    new_entry_metadata = {'question': question,
+                          'plan': response['planner_response']['text'],
+                          'tools': tools,
+                          'dataset_name': DATASET_NAME,
+    }
+    prompter.upsert_entry(new_entry_metadata)

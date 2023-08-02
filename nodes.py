@@ -10,6 +10,9 @@ with open(os.path.join(PROMPTS_DIR, 'solver.json'), 'r') as f:
     SOLVER_PROMPT = json.load(f)
 with open(os.path.join(PROMPTS_DIR, 'tools.json'), 'r') as f:
     TOOLS_PROMPT = json.load(f)
+with open(os.path.join(PROMPTS_DIR, 'extractor.json'), 'r') as f:
+    EXTRACTOR_PROMPT = json.load(f)
+
 
 
 class Node:
@@ -154,17 +157,19 @@ class WikipediaWorker(Node):
         evidence: str
             First paragraph of the first page from the search results
         """
+        evidence = "No evidence found."
         pages = wikipedia.search(inputs, results=1)
         if pages:
-            content = wikipedia.page(pages[0], auto_suggest=False).content
-            evidence = content.split('\n\n', 1)[0]
-        else:
-            evidence = "No evidence found."
+            try:
+                evidence = wikipedia.page(pages[0], auto_suggest=False).content
+            except:
+                pass
+
         return evidence
 
 
 class LLMWorker(LLMNode):
-    """LLM node to be used for worker calls"""    
+    """LLM node to be used for worker calls"""
     def run(self, inputs):
         """Run the LLM as a tool call
         Parameters:
@@ -221,6 +226,10 @@ class Worker(Node):
                         evidence = evidences[var]
                     except KeyError:
                         evidence = "No evidence found."
+                    evidence_words = evidence.split()
+                    if len(evidence_words) > 1024:
+                        evidence = ' '.join(evidence_words[:1024])
+                        evidence += '...'
                     tool_input = tool_input.replace(var, f"[{evidence}]")
 
             match tool:
@@ -266,7 +275,23 @@ class Solver(LLMNode):
                 evidence = evidences[e]
             except KeyError:
                 evidence = "No evidence found."
+            evidence_words = evidence.split()
+            if len(evidence_words) > 128:
+                evidence = ' '.join(evidence_words[:128])
+                evidence += '...'
             prompt += f"{plan}\nEvidence: {evidence}\n"
         prompt += f"{self.suffix + task.strip()}\n\n{self.ai_tag}"
+        output = self.call_llm(prompt)
+        return output
+
+class Extractor(LLMNode):
+    def __init__(self, model):
+        super().__init__(model)
+        self.prefix = EXTRACTOR_PROMPT['prefix']
+
+    def __call__(self, statement, question):
+        prompt = f"{self.system_tag}{self.prefix}\n"
+        prompt += f"{self.user_tag}Statement: {statement}\n"
+        prompt += f"Question: {question}\n{self.ai_tag}"
         output = self.call_llm(prompt)
         return output

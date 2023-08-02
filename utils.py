@@ -66,7 +66,7 @@ class LanguageModel:
                 **input_tokens,
                 generation_config=self.generation_config,
                 stopping_criteria=stopping_criteria
-                )      
+                )
 
         output_text = model.tokenizer.decode(output_tokens[0][input_length:],
                                              skip_special_tokens=True)
