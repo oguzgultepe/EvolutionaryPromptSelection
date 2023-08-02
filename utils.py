@@ -51,7 +51,7 @@ class LanguageModel:
         Parameters:
         ------------
         prompt: str
-            Prompt for the LLM
+        Prompt for the LLM
 
         Returns:
         ------------
@@ -62,13 +62,13 @@ class LanguageModel:
         input_length = input_tokens['input_ids'].shape[1]
         stopping_criteria = self.stop_sequences_criteria(stops, input_length)
         with torch.no_grad():
-            output_tokens = model.model.generate(
+            output_tokens = self.model.generate(
                 **input_tokens,
                 generation_config=self.generation_config,
                 stopping_criteria=stopping_criteria
                 )
 
-        output_text = model.tokenizer.decode(output_tokens[0][input_length:],
+        output_text = self.tokenizer.decode(output_tokens[0][input_length:],
                                              skip_special_tokens=True)
 
         return output_text
