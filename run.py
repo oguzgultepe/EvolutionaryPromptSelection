@@ -7,6 +7,7 @@ from transformers import GenerationConfig
 from tqdm.auto import tqdm
 
 from utils import LanguageModel, EPS, PWS
+from nodes import Extractor
 
 with open('secrets.json', 'r') as f:
     secrets = json.load(f)
