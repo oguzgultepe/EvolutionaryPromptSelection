@@ -51,7 +51,7 @@ class LanguageModel:
         Parameters:
         ------------
         prompt: str
-        Prompt for the LLM
+            Prompt for the LLM
 
         Returns:
         ------------
