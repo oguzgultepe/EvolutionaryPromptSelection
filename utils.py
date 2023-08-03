@@ -180,5 +180,5 @@ class EPS:
         embedding = self.embedding_model.encode(metadata['question'])
         metadata['id'] = entry_id
         metadata['score'] = 1
-        index.upsert(zip([str(entry_id)], [embedding], [metadata]))
+        self.index.upsert(zip([str(entry_id)], [embedding], [metadata]))
         self.index_size += 1

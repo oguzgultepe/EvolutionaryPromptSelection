@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import re
 import wikipedia
 
 PROMPTS_DIR = os.path.join(pathlib.Path(__file__).parent.resolve(), 'prompts')
@@ -12,7 +13,6 @@ with open(os.path.join(PROMPTS_DIR, 'tools.json'), 'r') as f:
     TOOLS_PROMPT = json.load(f)
 with open(os.path.join(PROMPTS_DIR, 'extractor.json'), 'r') as f:
     EXTRACTOR_PROMPT = json.load(f)
-
 
 
 class Node:
@@ -146,7 +146,7 @@ class WikipediaWorker(Node):
 
     def run(self, inputs):
         """Searches Wikipedia for the given inputs and returns the first
-        paragraph of the first page in search results
+        first page in search results
         Parameters:
         ------------
         inputs: str
@@ -158,7 +158,7 @@ class WikipediaWorker(Node):
             First paragraph of the first page from the search results
         """
         evidence = "No evidence found."
-        pages = wikipedia.search(inputs, results=1)
+        pages = wikipedia.search(inputs[:300], results=1)
         if pages:
             try:
                 evidence = wikipedia.page(pages[0], auto_suggest=False).content
@@ -182,6 +182,10 @@ class LLMWorker(LLMNode):
         evidence: str
             Cleaned response from the tool call
         """
+        # Truncate input if necessary
+        tokens = self.model.tokenizer(inputs)['input_ids']
+        if len(tokens) > 2000:
+            inputs = self.model.tokenizer.decode(tokens[:2000], skip_special_tokens=True)
         prompt = f"{self.system_tag}Directly answer the following question with no extra words.\n\n"
         prompt += f"{self.user_tag}{inputs.strip()}\n\n{self.ai_tag}"
         response = self.call_llm(prompt)
@@ -226,10 +230,6 @@ class Worker(Node):
                         evidence = evidences[var]
                     except KeyError:
                         evidence = "No evidence found."
-                    evidence_words = evidence.split()
-                    if len(evidence_words) > 1024:
-                        evidence = ' '.join(evidence_words[:1024])
-                        evidence += '...'
                     tool_input = tool_input.replace(var, f"[{evidence}]")
 
             match tool:
@@ -275,11 +275,8 @@ class Solver(LLMNode):
                 evidence = evidences[e]
             except KeyError:
                 evidence = "No evidence found."
-            evidence_words = evidence.split()
-            if len(evidence_words) > 128:
-                evidence = ' '.join(evidence_words[:128])
-                evidence += '...'
-            prompt += f"{plan}\nEvidence: {evidence}\n"
+            # Only include the first 500 characters of each evidence
+            prompt += f"{plan}\nEvidence: {evidence[:500]}...\n"
         prompt += f"{self.suffix + task.strip()}\n\n{self.ai_tag}"
         output = self.call_llm(prompt)
         return output
