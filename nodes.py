@@ -146,7 +146,7 @@ class WikipediaWorker(Node):
 
     def run(self, inputs):
         """Searches Wikipedia for the given inputs and returns the first
-        first page in search results
+        2000 characters of the first page in the search results
         Parameters:
         ------------
         inputs: str
@@ -162,6 +162,7 @@ class WikipediaWorker(Node):
         if pages:
             try:
                 evidence = wikipedia.page(pages[0], auto_suggest=False).content
+                evidence = evidence[:2000]
             except:
                 pass
 
@@ -185,9 +186,11 @@ class LLMWorker(LLMNode):
         # Truncate input if necessary
         tokens = self.model.tokenizer(inputs)['input_ids']
         if len(tokens) > 2000:
-            inputs = self.model.tokenizer.decode(tokens[:2000], skip_special_tokens=True)
-        prompt = f"{self.system_tag}Directly answer the following question with no extra words.\n\n"
-        prompt += f"{self.user_tag}{inputs.strip()}\n\n{self.ai_tag}"
+            inputs = self.model.tokenizer.decode(tokens[:2000],
+                                                 skip_special_tokens=True)
+        prompt = self.system_tag
+        prompt += "Directly answer the following question with no extra words."
+        prompt += f"\n\n{self.user_tag}{inputs.strip()}\n\n{self.ai_tag}"
         response = self.call_llm(prompt)
         evidence = response.strip()
         return evidence
