@@ -1,4 +1,4 @@
-import os
+import json
 import re
 import pinecone
 from datasets import load_dataset
@@ -14,8 +14,11 @@ seed_data = dataset['train']
 
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
-PINECONE_API_KEY = os.environ.get('PINECONE_API_KEY')
-PINECONE_ENV = os.environ.get('PINECONE_ENVIRONMENT')
+with open('secrets.json', 'r') as f:
+    secrets = json.load(f)
+
+PINECONE_API_KEY = secrets['PINECONE_API_KEY']
+PINECONE_ENV = secrets['PINECONE_ENVIRONMENT']
 
 pinecone.init(
     api_key=PINECONE_API_KEY,
