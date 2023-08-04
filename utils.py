@@ -259,7 +259,8 @@ class EPS:
             {question, plan, tools, dataset_name}
         """
         entry_id = self.index_size
-        embedding = self.embedding_model.encode(metadata['question'])
+        embedding = self.embedding_model.encode(
+            metadata['question'], show_progress_bar=False).tolist()
         metadata['id'] = entry_id
         metadata['score'] = 1
         self.index.upsert(zip([str(entry_id)], [embedding], [metadata]))
