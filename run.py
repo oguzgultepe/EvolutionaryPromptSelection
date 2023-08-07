@@ -4,6 +4,7 @@ import os
 import string
 import pinecone
 import torch
+from threading import Lock, Thread
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 from transformers import GenerationConfig
