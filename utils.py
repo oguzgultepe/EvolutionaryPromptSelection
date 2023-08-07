@@ -85,6 +85,7 @@ class LanguageModel:
         output_text: str
             LLM generated response
         """
+        start = time.time()
         input_tokens = self.tokenizer(prompt,
                                       return_tensors="pt").to(self.device)
         input_length = input_tokens['input_ids'].shape[1]
@@ -99,6 +100,8 @@ class LanguageModel:
         output_text = self.tokenizer.decode(output_tokens[0][input_length:],
                                             skip_special_tokens=True)
 
+        elapsed = time.time() - start
+        print(f"Processed input of length {input_length} on device {self.device} in {elapsed} seconds.")
         return output_text
 
 

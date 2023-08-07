@@ -4,6 +4,7 @@ import os
 import string
 import pinecone
 import torch
+import time
 from threading import Lock, Thread
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
@@ -85,6 +86,8 @@ def process_chunk(model, data, prompter, lock, thread_id, batch_offset):
                 json.dump(results, f)
             batch_id += batch_offset
             results = []
+        start = time.time()
+        print(f"Started processing sample {i} on device {thread_id}.")
         # Select examples using the prompter
         lock.acquire()
         selection = prompter.select_examples(question, NUM_EXAMPLES)
@@ -131,6 +134,8 @@ def process_chunk(model, data, prompter, lock, thread_id, batch_offset):
             for entry in selection:
                 prompter.increment_score(entry['id'])
             lock.release()
+        elaspsed = time.time() - start
+        print(f"Processed sample {i} ({em}) on device {thread_id} in {elapsed} seconds.")
     # Process and save results for the last batch    
     acc = sum([result['em'] for result in results]) / len(results)
     print(f"Processed batch number {batch_id} with {acc} accuracy.")
