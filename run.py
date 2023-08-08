@@ -156,7 +156,7 @@ class processorThread(Thread):
 
 
 if DEVICE_COUNT == 'auto':
-    DEVICE_COUNT = driver.Device.count()
+    DEVICE_COUNT = torch.cuda.device_count()
 
 dataset_size = dataset['train'].num_rows
 chunk_size = int(math.ceil(dataset_size / DEVICE_COUNT))
