@@ -87,7 +87,6 @@ def process_chunk(model, data, prompter, lock, thread_id, batch_offset):
             batch_id += batch_offset
             results = []
         start = time.time()
-        print(f"Started processing sample {i} on device {thread_id}.")
         # Select examples using the prompter
         lock.acquire()
         selection = prompter.select_examples(question, NUM_EXAMPLES)
@@ -135,33 +134,42 @@ def process_chunk(model, data, prompter, lock, thread_id, batch_offset):
                 prompter.increment_score(entry['id'])
             lock.release()
         elaspsed = time.time() - start
-        print(f"Processed sample {i} ({em}) on device {thread_id} in {elapsed} seconds.")
     # Process and save results for the last batch    
     acc = sum([result['em'] for result in results]) / len(results)
     print(f"Processed batch number {batch_id} with {acc} accuracy.")
     with open(f"results/results_batch_{batch_id}.json", "w") as f:
         json.dump(results, f)
 
-
 if DEVICE_COUNT == 'auto':
-    device_count = torch.cuda.device_count()
-else:
-    device_count = DEVICE_COUNT
+    DEVICE_COUNT = torch.cuda.device_count()
 
 dataset_size = dataset['train'].num_rows
-chunk_size = int(math.ceil(dataset_size / device_count))
+chunk_size = int(math.ceil(dataset_size / DEVICE_COUNT))
+chunks = [dataset['train'][(device * chunk_size):((device + 1) * chunk_size)]
+          for device in range(DEVICE_COUNT)]
+data = [zip(chunk['question'], chunk['answer']) for chunk in chunks]
+
 lock = Lock()
 threads = []
-for device in range(device_count):
-    chunk = dataset['train'][(device * chunk_size):((device + 1) * chunk_size)]
-    data = zip(chunk['question'], chunk['answer'])
+models = []
+for device in range(DEVICE_COUNT):
+    generation_config = GenerationConfig(
+        do_sample=True,
+        temperature=TEMPERATURE,
+        top_k=TOP_K,
+        top_p=TOP_P,
+        repetition_penalty=REPETITION_PENALTY,
+        max_new_tokens=MAX_NEW_TOKENS
+    )
     model = LanguageModel(MODEL_PATH, generation_config=generation_config,
-                          device_map=device, load_in_8bit=LOAD_IN_8BIT,
-                          access_token=HF_TOKEN, system_tag=SYSTEM_TAG,
-                          user_tag=USER_TAG, ai_tag=AI_TAG)
-    args = args=(model, data, prompter, lock, device, device_count)
+                          device_map=device, load_in_8bit=LOAD_IN_8BIT, access_token=HF_TOKEN,
+                          system_tag=SYSTEM_TAG, user_tag=USER_TAG, ai_tag=AI_TAG)
+    args = args=(model, data[device], prompter, lock, device, DEVICE_COUNT)
     threads.append(Thread(target=process_chunk, args=args))
 
 os.mkdir('results')
 for thread in threads:
     thread.start()
+
+for thread in threads:
+    thread.join()

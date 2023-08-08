@@ -85,9 +85,9 @@ class LanguageModel:
         output_text: str
             LLM generated response
         """
-        start = time.time()
-        input_tokens = self.tokenizer(prompt,
-                                      return_tensors="pt").to(self.device)
+        start = time.perf_counter()
+        input_tokens = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+        encoding_time = time.perf_counter() - start
         input_length = input_tokens['input_ids'].shape[1]
         stopping_criteria = self.stop_sequences_criteria(stops, input_length)
         with torch.no_grad():
@@ -96,14 +96,15 @@ class LanguageModel:
                 generation_config=self.generation_config,
                 stopping_criteria=stopping_criteria
                 )
-
+        gpu_time = time.perf_counter() - (start + encoding_time)
         output_text = self.tokenizer.decode(output_tokens[0][input_length:],
                                             skip_special_tokens=True)
-
-        elapsed = time.time() - start
-        print(f"Processed input of length {input_length} on device {self.device} in {elapsed} seconds.")
+        decoding_time = time.perf_counter() - (start + encoding_time + gpu_time)
+        log_message = f"Device {self.device} generated:\n\t{len(output_tokens[0])-input_length} new tokens\n"
+        log_message += f"\tfrom: {input_length} prompt tokens\n"
+        log_message += f"\tin: {time.perf_counter() - start} seconds\n"
+        print(log_message)
         return output_text
-
 
 class PWS:
     """ Planner Worker Solver Framework"""
