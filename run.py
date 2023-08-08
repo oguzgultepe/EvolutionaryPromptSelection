@@ -9,7 +9,6 @@ from threading import Lock, Thread
 from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 from transformers import GenerationConfig
-from pycuda import driver
 
 from utils import LanguageModel, EPS, PWS
 from nodes import Extractor
@@ -65,8 +64,6 @@ class processorThread(Thread):
     def __init__(self, device_id, data, prompter, lock, batch_offset):
         Thread.__init__(self)
         self.device_id = device_id
-        self.ctx  = driver.Device(device_id).make_context()
-        self.device = self.ctx.get_device()
         generation_config = GenerationConfig(
             do_sample=True,
             temperature=TEMPERATURE,
@@ -76,15 +73,13 @@ class processorThread(Thread):
             max_new_tokens=MAX_NEW_TOKENS
         )
         self.model = LanguageModel(MODEL_PATH, generation_config=generation_config,
-                                   device_map=self.device, load_in_8bit=LOAD_IN_8BIT,
+                                   device_map=self.device_id, load_in_8bit=LOAD_IN_8BIT,
                                    access_token=HF_TOKEN, system_tag=SYSTEM_TAG,
                                    user_tag=USER_TAG, ai_tag=AI_TAG)
         self.data = data
         self.prompter = prompter
         self.lock = lock
         self.batch_offset = batch_offset
-        
-        
 
     def run(self):
         print(f"Thread {self.device_id} started.\n")
@@ -140,7 +135,7 @@ class processorThread(Thread):
                 new_entry_metadata = {'question': question,
                                       'plan': response['planner_response']['text'],
                                       'tools': tools,
-                                      'dataset_name': DATASET_NAME,  
+                                      'dataset_name': DATASET_NAME,
                 }
                 self.lock.acquire()
                 # Add new plans to the index 
@@ -157,11 +152,9 @@ class processorThread(Thread):
 
 
     def join(self):
-        self.ctx.detach()
         Thread.join(self)
 
 
-driver.init()
 if DEVICE_COUNT == 'auto':
     DEVICE_COUNT = driver.Device.count()
 
