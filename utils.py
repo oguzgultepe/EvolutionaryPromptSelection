@@ -3,7 +3,7 @@ import re
 import time
 import torch
 from numpy.random import choice
-from transformers import GenerationConfig, LlamaForCausalLM, LlamaTokenizer
+from transformers import LlamaForCausalLM, LlamaTokenizer
 from transformers import StoppingCriteria, StoppingCriteriaList
 
 from nodes import Planner, Worker, Solver
@@ -41,10 +41,12 @@ class LanguageModel:
             model_path, torch_dtype=torch.float16, device_map=device_map,
             load_in_8bit=load_in_8bit, use_auth_token=access_token)
         self.generation_config = generation_config
-        if device_map == 'auto':
-            self.device = 'cuda'
+        if device_map == "auto":
+            self.device = "cuda"
+        elif isinstance(device_map, int):
+            self.device = f"cuda:{device}"
         else:
-            self.device = f'cuda:{device_map}'
+            self.device = device_map
         self.system_tag = system_tag
         self.user_tag = user_tag
         self.ai_tag = ai_tag
@@ -85,9 +87,9 @@ class LanguageModel:
         output_text: str
             LLM generated response
         """
-        start = time.perf_counter()
-        input_tokens = self.tokenizer(prompt, return_tensors="pt").to(self.device)
-        encoding_time = time.perf_counter() - start
+        input_tokens = self.tokenizer(
+            prompt, return_tensors="pt"
+        ).to(self.device)
         input_length = input_tokens['input_ids'].shape[1]
         stopping_criteria = self.stop_sequences_criteria(stops, input_length)
         with torch.no_grad():
@@ -96,15 +98,10 @@ class LanguageModel:
                 generation_config=self.generation_config,
                 stopping_criteria=stopping_criteria
                 )
-        gpu_time = time.perf_counter() - (start + encoding_time)
         output_text = self.tokenizer.decode(output_tokens[0][input_length:],
                                             skip_special_tokens=True)
-        decoding_time = time.perf_counter() - (start + encoding_time + gpu_time)
-        log_message = f"Device {self.device} generated:\n\t{len(output_tokens[0])-input_length} new tokens\n"
-        log_message += f"\tfrom: {input_length} prompt tokens\n"
-        log_message += f"\tin: {time.perf_counter() - start} seconds\n"
-        print(log_message)
         return output_text
+
 
 class PWS:
     """ Planner Worker Solver Framework"""
@@ -157,41 +154,24 @@ class PWS:
 
 class EPS:
     """ Evolutionary Prompt Selection"""
-    def __init__(self, index, embedding_model,
-                 similar_pool_size=5, instructive_pool_size=5):
+    def __init__(self, index, embedding_model):
         self.index = index
-        index_stats = self.index.describe_index_stats()
-        self.index_size = index_stats['total_vector_count']
         self.embedding_model = embedding_model
-        self.similar_pool_size = similar_pool_size
-        self.instructive_pool_size = instructive_pool_size
-        self.most_instructive = []
-        self.set_most_instructive()
 
-    def set_most_instructive(self):
-        """Retrieve the most instructive examples from the index
-        Pinecone does not support aggregations over metadata so we fetch all
-        instructions and manually select the most instructive ones
+    def get_size(self):
+        """Returns the total vector count in the index
+        Returns:
+        ------------
+            size: int
+                total vector count in the index
         """
-        batch_size = 1000
-        score = lambda entry: entry['metadata']['score']
-        for i in range(0, self.index_size, batch_size):
-            # Find end of batch
-            i_end = min(i+batch_size, self.index_size)
-            # Create IDs batch
-            ids = [str(idx) for idx in range(i, i_end)]
-            batch = list(self.index.fetch(ids)['vectors'].values())
-            # Sort and keep the most instructive
-            batch_sorted = sorted(batch + self.most_instructive,
-                                  key=score, reverse=True)
-            self.most_instructive = batch_sorted[:self.instructive_pool_size]
+        size = self.index.describe_index_stats()['total_vector_count']
+        return size
 
-    def select_examples(self, task, num_examples=3):
+    def select_examples(self, task, num_examples=3, top_k=50):
         """Select instructive examples based on a given task
-        This method samples instructions from a curated pool of examples
-        The pool is curated by combinining (similar_pool_size) number of
-        semantically similar examples and (instructive_pool_size) number of
-        examples with high instruction score
+        This method samples instructions from a pool of examples
+        The pool is curated querying the index for the top_k most similar tasks
         The examples are then sampled based on their combined example score:
         ((semantic similarity + 1.0) * (log(instruction_score) + 1.0)
         Parameters:
@@ -200,59 +180,46 @@ class EPS:
             Task for which the instructive examples are to be selected
         nun_examples: int, default=3
             Number of instructive examples to return
-
+        top_k: int
+            Example pool size
         Returns:
         ------------
         examples: list(str)
             List of instructive examples relevant to the task
         """
-        task_embedding = self.embedding_model.encode(task,
-            show_progress_bar=False).tolist()
-        most_similar = self.index.query(task_embedding,
-                                        top_k=self.similar_pool_size,
-                                        include_metadata=True)['matches']
-        instructive_ids = [entry['metadata']['id']
-                           for entry in self.most_instructive]
-        most_instructive = self.index.query(task_embedding,
-            top_k=self.instructive_pool_size,
-            filter={'id':{"$in": instructive_ids}},
-            include_metadata=True)['matches']
-        pool = most_similar + most_instructive
-        weights = [(entry['score'] + 1.0) * (math.log(
-            entry['metadata']['score']) + 1.0) for entry in pool]
+        def combined_score(entry):
+            similarity = entry['score']
+            score = entry['metadata']['score']
+            combined_score = (similarity + 1.0) * (math.log(score) + 1.0)
+            return combined_score
+
+        task_embedding = self.embedding_model.encode(
+            task, show_progress_bar=False).tolist()
+        pool = self.index.query(vector=task_embedding, top_k=top_k,
+                                include_metadata=True)['matches']
+        weights = [combined_score(entry) for entry in pool]
         probabilities = list(map(lambda weight: weight/sum(weights), weights))
         sample_ids = choice(range(len(pool)), num_examples,
                             replace=False, p=probabilities)
         examples = [pool[i] for i in sample_ids]
         return examples
 
-    def increment_score(self, entry_id):
+    def increment_score(self, entry_ids):
         """Increment the instruction score of an example
         Parameters:
         ------------
-        entry_id: str
-            Score of the example with the given entry_id is incremented
+        entry_ids: str or list(str)
+            Increment the score/s of the example/s with given entry_id/s
         """
         score = lambda entry: entry['metadata']['score']
-        entry = None
-        # Check if the entry is in the most instructive pool
-        for candidate in self.most_instructive:
-            if candidate['id'] == entry_id:
-                entry = candidate
-        # If the entry is not in the most instructive pool
-        if not entry:
-            # Fetch it from the index 
-            entry = self.index.fetch([entry_id])['vectors'][entry_id]
-            # Add the entry to the most instructive pool
-            self.most_instructive.append(entry)
-        # Update entry score   
-        entry['metadata']['score'] += 1
-        self.index.update(id=entry['id'], set_metadata={"score": score(entry)})
-        # Sort the most instructive pool and keep the most instructive
-        self.most_instructive = sorted(self.most_instructive,
-                                       key=score, reverse=True)
-        self.most_instructive = self.most_instructive[
-            :self.instructive_pool_size]
+        # Wrap str input with a list
+        if isinstance(entry_ids, str):
+            entry_ids = [entry_ids]
+        # Fetch the entries from the index 
+        entries = self.index.fetch(entry_ids)['vectors']
+        for entry_id, entry in entries.items():
+            self.index.update(id=entry_id,
+                              set_metadata={"score": score(entry) + 1})
 
     def upsert_entry(self, metadata):
         """Upsert a new entry into the index
@@ -262,10 +229,9 @@ class EPS:
             a dictionary containing entry metadata
             {question, plan, tools, dataset_name}
         """
-        entry_id = self.index_size
         embedding = self.embedding_model.encode(
             metadata['question'], show_progress_bar=False).tolist()
-        metadata['id'] = entry_id
         metadata['score'] = 1
+        entry_id = self.get_size()
+        metadata['id'] = entry_id
         self.index.upsert(zip([str(entry_id)], [embedding], [metadata]))
-        self.index_size += 1

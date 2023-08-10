@@ -4,16 +4,19 @@ import pathlib
 import re
 import wikipedia
 
-PROMPTS_DIR = os.path.join(pathlib.Path(__file__).parent.resolve(), 'prompts')
-with open(os.path.join(PROMPTS_DIR, 'planner.json'), 'r') as f:
-    PLANNER_PROMPT = json.load(f)
-with open(os.path.join(PROMPTS_DIR, 'solver.json'), 'r') as f:
-    SOLVER_PROMPT = json.load(f)
-with open(os.path.join(PROMPTS_DIR, 'tools.json'), 'r') as f:
-    TOOLS_PROMPT = json.load(f)
-with open(os.path.join(PROMPTS_DIR, 'extractor.json'), 'r') as f:
-    EXTRACTOR_PROMPT = json.load(f)
+# Check if we are running on kaggle
+if os.environ.get('KAGGLE_URL_BASE',''):
+    PROMPTS_PATH = '/kaggle/input/pws-prompts/prompts.json'
+else:
+    PROMPTS_PATH = os.path.join(pathlib.Path(__file__).parent.resolve(),
+                                'prompts.json')
 
+with open(PROMPTS_PATH) as f:
+    prompts = json.load(f)
+    PLANNER_PROMPT = prompts['PLANNER_PROMPT']
+    SOLVER_PROMPT = prompts['SOLVER_PROMPT']
+    TOOLS_PROMPT = prompts['TOOLS_PROMPT']
+    EXTRACTOR_PROMPT = prompts['EXTRACTOR_PROMPT']
 
 class Node:
     """Basic node class"""
