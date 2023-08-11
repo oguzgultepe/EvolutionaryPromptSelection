@@ -15,7 +15,7 @@ This script by defaults loads a `StableBeluga-13B` model and initializes a PWS a
 The user is then asked to provide a question.
 Prompter selects 3 examples based on the question and the agent tries to answer the question based on these 3 examples.
 
-### What else?
+### Accelerated Training
 `accelerated_training.py` script can be used to train the prompter on multiple GPUs via HuggingFace Accelerate library.
 In order to do this, you will need to first configure the accelerate environment.
 This can be done either by running `accelerate config` and answering the provided questions 
@@ -31,6 +31,7 @@ where `--num_processess` denotes the number of GPUs to utilize.
 
 The script by default trains the prompter on `trivia_qa` dataset using a `StableBeluga-13B` model.
 
+### What else?
 You can find implementation details of the LLM interface, PWS agent and the evolutionary prompter in `utils.py`.
 For more examples, you can check the attached notebooks.
 

@@ -133,12 +133,12 @@ class Planner(LLMNode):
             elif len(line) < 3:
                 continue
             elif line.startswith("#") and line[1] == "E" and line[2].isdigit():
-                e, tool_call = line.split("=", 1)
-                e, tool_call = e.strip(), tool_call.strip()
-                if len(e) == 3:
+                try:
+                    e, tool_call = line.split("=", 1)
+                    e, tool_call = e.strip(), tool_call.strip()
                     tool_calls[e] = tool_call
-                else:
-                    tool_calls[e] = "No evidence found"
+                except ValueError:
+                    tool_calls[line] = "No evidence found."
         return plans, tool_calls
 
 
