@@ -93,8 +93,6 @@ def main():
     with accelerator.main_process_first():
         embedding_model = SentenceTransformer(EMBEDDING_MODEL,
                                               device=accelerator.device)
-    accelerator.print('Preparing the LLMs...')
-    model = accelerator.prepare(model)
     # Initialize the evolutionary prompter
     accelerator.print('Initializing prompters...')
     prompter = EPS(index, embedding_model)
@@ -156,11 +154,8 @@ def main():
         # and increment the scores of the selected instructions
         if em:
             # Aggregate the tools used for this instance
-            tools = set()
-            for calls in response['planner_response']['tool_calls'].values():
-                tool = calls.split('[', 1)[0]
-                tools.add(tool)
-            tools = list(tools)
+            tool_calls = response['planner_response']['tool_calls'].values()
+            tools = list(set([tool for (tool, _) in tool_calls]))
             # Metadata for the new plans
             new_entry_metadata = {'question': question,
                                   'plan': response['planner_response']['text'],

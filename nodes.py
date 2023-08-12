@@ -60,6 +60,10 @@ class Planner(LLMNode):
         self.prefix = PLANNER_PROMPT['prefix']
         self.suffix = PLANNER_PROMPT['suffix']
         self.tools = TOOLS_PROMPT
+        plan_pattern = r'(Plan: .+)\n'
+        tool_call_pattern = r'(#E\d+) = (Wikipedia|LLM)\[(.+)\]'
+        self.plan_regex = re.compile(plan_pattern)
+        self.tool_call_regex = re.compile(tool_call_pattern)
 
     def run(self, task, examples):
         """Generate plans for the given task, examples and tools
@@ -122,23 +126,12 @@ class Planner(LLMNode):
         ------------
         plans: list(str)
             List that contains the plans
-        evidences: dict(str:str)
-            Evidence dict conatining evidences and associated tool calls
+        tool_calls : dict(str:str)
+            Tool call dict conatining evidences and associated tool calls
         """
-        plans = []
-        tool_calls = {}
-        for line in response.splitlines():
-            if line.startswith("Plan:"):
-                plans.append(line)
-            elif len(line) < 3:
-                continue
-            elif line.startswith("#") and line[1] == "E" and line[2].isdigit():
-                try:
-                    e, tool_call = line.split("=", 1)
-                    e, tool_call = e.strip(), tool_call.strip()
-                    tool_calls[e] = tool_call
-                except ValueError:
-                    tool_calls[line] = "No evidence found."
+        plans = self.plan_regex.findall(response)
+        tool_calls = {tool_call[0]: (tool_call[1], tool_call[2])
+                      for tool_call in self.tool_call_regex.findall(response)}
         return plans, tool_calls
 
 
@@ -209,7 +202,7 @@ class Worker(Node):
         """Faciliates all tool calls and returns evidences
         Parameters:
         ------------
-        inputs: dict(str:str)
+        inputs: dict(str:(str, str))
             A dictionary of evidence variables and associated tool calls
 
         Returns:
@@ -219,24 +212,14 @@ class Worker(Node):
             tool calls
         """
         evidences = {}
-        for e, tool_call in inputs.items():
-            # Do not process tools without input
-            if "[" not in tool_call:
-                evidences[e] = tool_call
-                continue
-
-            # Seperate tool and tool input
-            tool, tool_input = tool_call.split("[", 1)
-            tool_input = tool_input[:-1]
-
+        for e, (tool, tool_input) in inputs.items():
             # Find variables in input and replace with previous evidences
-            for var in re.findall(r"#E\d+", tool_input):
-                if var in evidences:
-                    try:
-                        evidence = evidences[var]
-                    except KeyError:
-                        evidence = "No evidence found."
-                    tool_input = tool_input.replace(var, f"[{evidence}]")
+            for var in re.findall(r'#E\d+', tool_input):
+                try:
+                    evidence = evidences[var]
+                except KeyError:
+                    evidence = "No evidence found."
+                tool_input = tool_input.replace(var, f"[{evidence}]")
 
             match tool:
                 case "Wikipedia":
