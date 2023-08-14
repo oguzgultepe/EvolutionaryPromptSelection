@@ -2,6 +2,7 @@ import json
 import os
 import pathlib
 import re
+import time
 import wikipedia
 
 # Check if we are running on kaggle
@@ -153,14 +154,16 @@ class WikipediaWorker(Node):
         evidence: str
             First paragraph of the first page from the search results
         """
-        evidence = "No evidence found."
-        pages = wikipedia.search(inputs[:300], results=1)
-        if pages:
+        while True:
             try:
-                evidence = wikipedia.page(pages[0], auto_suggest=False).content
-                evidence = evidence[:2000]
+                pages = wikipedia.search(inputs[:300], results=1)
             except:
-                pass
+                time.sleep(1)
+        try:
+            evidence = wikipedia.page(pages[0], auto_suggest=False).content
+            evidence = evidence[:2000]
+        except:
+            evidence = "No evidence found."
 
         return evidence
 
