@@ -157,6 +157,7 @@ class WikipediaWorker(Node):
         while True:
             try:
                 pages = wikipedia.search(inputs[:300], results=1)
+                break
             except:
                 time.sleep(1)
         try:
