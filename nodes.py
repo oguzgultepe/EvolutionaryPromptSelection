@@ -173,8 +173,14 @@ class WikipediaWorker(Node):
             except wikipedia.exceptions.WikipediaException:
                 time.sleep(1)
         try:
-            evidence = wikipedia.page(pages[0], auto_suggest=False).content
-            evidence = evidence[:2000]
+            if pages:
+                page = pages[0]
+                evidence = wikipedia.page(
+                    page, auto_suggest=False
+                ).content
+                evidence = evidence[:2000]
+            else:
+                evidence = "No evidence found."
         except wikipedia.exceptions.DisambiguationError:
             evidence = "No evidence found."
 
