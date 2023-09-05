@@ -1,18 +1,19 @@
 import math
-import re
-import time
 import torch
-from numpy.random import choice
-from transformers import LlamaForCausalLM, LlamaTokenizer
-from transformers import StoppingCriteria, StoppingCriteriaList
+import numpy as np
+import pandas as pd
 
-from nodes import Planner, Worker, Solver
+from numpy.random import choice
+from scipy import stats
+from tqdm.auto import tqdm
+from transformers import StoppingCriteria, StoppingCriteriaList
 
 
 class MultiTokenEOSCriteria(StoppingCriteria):
-    """Stopping criteria based on a given multi-token sequence.
-    Please refer to HuggingFace Transformers library for documentation"""
-
+    """
+    Stopping criteria based on a given multi-token sequence.
+    Please refer to HuggingFace Transformers library for documentation
+    """
     def __init__(self, sequence, tokenizer, initial_decoder_input_length):
         self.initial_decoder_input_length = initial_decoder_input_length
         self.sequence = sequence
@@ -22,38 +23,32 @@ class MultiTokenEOSCriteria(StoppingCriteria):
         self.tokenizer = tokenizer
 
     def __call__(self, input_ids, scores, **kwargs) -> bool:
-        # For efficiency, we compare the last n tokens where n is the number
-        # of tokens in the stop_sequence
+        """
+        For efficiency, we compare the last n tokens where n is the
+        number of tokens in the stop_sequence
+        """
         lookback_ids = input_ids[0][self.initial_decoder_input_length:]
         lookback_ids = lookback_ids[-self.sequence_id_len:]
         lookback_tokens = self.tokenizer.decode(lookback_ids)
         return self.sequence in lookback_tokens
 
 
-class LanguageModel:
+class LMWrapper:
     """Language model wrapper to be used in nodes"""
-    def __init__(self, model_path, generation_config,
-                 device_map='auto', load_in_8bit=False, access_token=None,
+    def __init__(self, model, tokenizer, generation_config,
                  system_tag='\n', user_tag='\n', ai_tag='\n'):
-        self.tokenizer = LlamaTokenizer.from_pretrained(model_path,
-            use_auth_token=access_token)
-        self.model = LlamaForCausalLM.from_pretrained(
-            model_path, torch_dtype=torch.float16, device_map=device_map,
-            load_in_8bit=load_in_8bit, use_auth_token=access_token)
+        self.tokenizer = tokenizer
+        self.model = model
+        self.device = f"cuda:{min(model.hf_device_map.values())}"
         self.generation_config = generation_config
-        if device_map == "auto":
-            self.device = "cuda"
-        elif isinstance(device_map, int):
-            self.device = f"cuda:{device}"
-        else:
-            self.device = device_map
         self.system_tag = system_tag
         self.user_tag = user_tag
         self.ai_tag = ai_tag
 
     def stop_sequences_criteria(self, stop_sequences,
                                 initial_decoder_input_length):
-        """Creates a custom stopping criteria for the given input
+        """
+        Creates a custom stopping criteria for the given input
         Parameters:
         ------------
         stop_sequences: list(str)
@@ -74,7 +69,8 @@ class LanguageModel:
         )
 
     def generate(self, prompt, stops):
-        """Generate text based on given prompt
+        """
+        Generate text based on given prompt
         Parameters:
         ------------
         prompt: str
@@ -87,9 +83,8 @@ class LanguageModel:
         output_text: str
             LLM generated response
         """
-        input_tokens = self.tokenizer(
-            prompt, return_tensors="pt"
-        ).to(self.device)
+        input_tokens = self.tokenizer(prompt, return_tensors="pt")
+        input_tokens = input_tokens.to(self.device)
         input_length = input_tokens['input_ids'].shape[1]
         stopping_criteria = self.stop_sequences_criteria(stops, input_length)
         with torch.no_grad():
@@ -103,55 +98,6 @@ class LanguageModel:
         return output_text
 
 
-class PWS:
-    """ Planner Worker Solver Framework"""
-    def __init__(self, model):
-        self.planner = Planner(model=model)
-        self.worker = Worker(model=model)
-        self.solver = Solver(model=model)
-
-    def run(self, task, examples, verbose=False):
-        """Run the PWS on a given task based on provided examples
-        Parameters:
-        ------------
-        task: str
-            Task for which the PWS is to be run
-        examples: list(str)
-            Examples related to the task for the fewshot prompt
-        verbose: bool, default=False
-            If True, responses from intermediate nodes are also returned
-
-        Returns:
-        ------------
-        pws_response: dict(str:obj)
-            PWS response contains the output and time elapsed
-            If verbose responses from intermediate nodes are also returned
-        """
-
-        st = time.time()
-        # Plan
-        planner_response = self.planner.run(task, examples)
-        plans = planner_response["plans"]
-        tool_calls = planner_response["tool_calls"]
-
-        # Work
-        evidences = self.worker.run(tool_calls)
-
-        # Solve
-        output = self.solver.run(task, plans, evidences)
-
-        wall_time = time.time() - st
-
-        pws_response = {"output": output,
-                        "wall_time": wall_time}
-
-        if verbose:
-            pws_response["planner_response"] = planner_response
-            pws_response["worker_response"] = evidences
-
-        return pws_response
-
-
 class EPS:
     """ Evolutionary Prompt Selection"""
     def __init__(self, index, embedding_model):
@@ -159,7 +105,8 @@ class EPS:
         self.embedding_model = embedding_model
 
     def get_size(self):
-        """Returns the total vector count in the index
+        """
+        Returns the total vector count in the index
         Returns:
         ------------
             size: int
@@ -169,10 +116,13 @@ class EPS:
         return size
 
     def select_examples(self, task, num_examples=3, top_k=50):
-        """Select instructive examples based on a given task
+        """
+        Select instructive examples based on a given task
         This method samples instructions from a pool of examples
-        The pool is curated querying the index for the top_k most similar tasks
-        The examples are then sampled based on their combined example score:
+        The pool is curated querying the index for the top_k most
+        similar tasks
+        The examples are then sampled based on their combined example
+        score:
         ((semantic similarity + 1.0) * (log(instruction_score) + 1.0)
         Parameters:
         ------------
@@ -184,7 +134,7 @@ class EPS:
             Example pool size
         Returns:
         ------------
-        examples: list(str)
+        examples: list(dict)
             List of instructive examples relevant to the task
         """
         def combined_score(entry):
@@ -205,24 +155,29 @@ class EPS:
         return examples
 
     def increment_score(self, entry_ids):
-        """Increment the instruction score of an example
+        """
+        Increment the instruction score of an example
         Parameters:
         ------------
         entry_ids: str or list(str)
             Increment the score/s of the example/s with given entry_id/s
         """
-        score = lambda entry: entry['metadata']['score']
         # Wrap str input with a list
         if isinstance(entry_ids, str):
             entry_ids = [entry_ids]
-        # Fetch the entries from the index 
+        # Fetch the entries from the index
         entries = self.index.fetch(entry_ids)['vectors']
         for entry_id, entry in entries.items():
-            self.index.update(id=entry_id,
-                              set_metadata={"score": score(entry) + 1})
+            self.index.update(
+                id=entry_id,
+                set_metadata={
+                    "score": entry['metadata']['score'] + 1
+                }
+            )
 
     def upsert_entry(self, metadata):
-        """Upsert a new entry into the index
+        """
+        Upsert a new entry into the index
         Parameters:
         ------------
         metadata: dict
@@ -235,3 +190,109 @@ class EPS:
         entry_id = self.get_size()
         metadata['id'] = entry_id
         self.index.upsert(zip([str(entry_id)], [embedding], [metadata]))
+
+    def create_nis(self, show_progress_bar=True):
+        """
+        Creates a new normalized instruction sampler (NIS) based on the
+        instructions in the index
+        """
+        total_vector_count = self.get_size()
+        chunk_size = 1000
+        instructions = {}
+        embeddings = {}
+        for chunk_start in tqdm(range(0, total_vector_count, chunk_size),
+                                disable=not show_progress_bar):
+            chunk_end = min(chunk_start + 1000, total_vector_count)
+            idx = [str(i) for i in range(chunk_start, chunk_end)]
+            vectors = self.index.fetch(idx)['vectors']
+            for entry_id, entry in vectors.items():
+                instructions[int(entry_id)] = entry['metadata']
+                embeddings[int(entry_id)] = entry['values']
+
+        instructions = pd.DataFrame.from_dict(instructions, orient='index')
+        instructions = instructions.sort_index()
+        embeddings = np.array([v for _, v in sorted(embeddings.items())])
+        return NIS(instructions, embeddings, self.embedding_model)
+
+
+class NIS:
+    '''Normalized Instruction Sampler'''
+    def __init__(
+        self, instructions, embeddings, embedding_model, pool_size=50
+    ):
+        self.instructions = instructions
+        self.embeddings = embeddings
+        self.embedding_model = embedding_model
+        self.pool_size = pool_size
+        log_index = np.log(instructions.index + 1)
+        lr = stats.linregress(log_index, instructions.score)
+        log_curve = (lr.slope * log_index + lr.intercept)
+        self.normalized_scores = instructions.score / log_curve
+
+    def sample_instructions(self, task, num_instructions=3,
+                            sampling='pool-prob', adjust_scores=True):
+        '''
+        Sample instructions based on a task
+        Parameters
+        ------------
+        task: str
+            Task in natural language
+        num_instructions: int, default=3
+            Number of instructions to be samples
+        sampling: str, default='pool-prob'
+            Sampling strategy
+            'random': randomly sample from all instructions
+            'pool-prob': curate a pool of similar instructions
+                         then sample instructions based on score
+            'pool-top': curate a pool of similar instructions
+                        then select instructions with score
+            'pool-random': curate a pool of similar instructions
+                           then sample randomly
+        adjust_scores: bool, default=True
+            If True, scores are multiplied by similarity values
+
+        Returns
+        ------------
+        : pandas Series
+            contains sampled instructions
+        '''
+        # Directly sample if sampling == 'random'
+        if sampling == 'random':
+            selected_instructions = self.instructions.sample(
+                n=num_instructions)
+        else:
+            # Encode question
+            question_embedding = self.embedding_model.encode(
+                task, normalize_embeddings=True, show_progress_bar=False)
+            # Compute similarity
+            similarities = self.embeddings @ question_embedding
+            # Select similar pool
+            pool_ids = similarities.argpartition(kth=self.pool_size)
+            pool_ids = pool_ids[:self.pool_size]
+            pool_scores = self.normalized_scores[pool_ids]
+            # Multiply scores by (semantic similarity + 1)
+            if adjust_scores:
+                pool_similarities = similarities[pool_ids]
+                pool_scores *= (pool_similarities + 1)
+            match sampling:
+                # Similarity pool + probabilistic sampling
+                case 'pool-prob':
+                    instruction_ids = pool_scores.sample(n=num_instructions,
+                                                         weights=pool_scores)
+                # Similarity pool + select top scorers
+                case 'pool-top':
+                    instruction_ids = pool_scores.sort_values(ascending=False)
+                    instruction_ids = instruction_ids[:num_instructions]
+                # Similarity pool + random sampling
+                case 'pool-random':
+                    instruction_ids = pool_scores.sample(n=num_instructions)
+            # Select instructions
+            instruction_ids = instruction_ids.index
+            selected_instructions = self.instructions.loc[instruction_ids]
+            # Make sure it is a copy and not a view
+            selected_instructions = selected_instructions.copy()
+            # Include normalized/adjusted scores
+            selected_instructions.score = pool_scores[instruction_ids]
+        # Convert to list of dictionaries format
+        selected_instructions = selected_instructions.to_dict(orient='index')
+        return list(selected_instructions.values())

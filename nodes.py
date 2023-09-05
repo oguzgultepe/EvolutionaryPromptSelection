@@ -6,11 +6,13 @@ import time
 import wikipedia
 
 # Check if we are running on kaggle
-if os.environ.get('KAGGLE_URL_BASE',''):
+if os.environ.get('KAGGLE_URL_BASE', ''):
     PROMPTS_PATH = '/kaggle/input/pws-prompts/prompts.json'
 else:
-    PROMPTS_PATH = os.path.join(pathlib.Path(__file__).parent.resolve(),
-                                'prompts.json')
+    PROMPTS_PATH = os.path.join(
+        pathlib.Path(__file__).parent.resolve(),
+        'prompts.json'
+    )
 
 with open(PROMPTS_PATH) as f:
     prompts = json.load(f)
@@ -18,27 +20,30 @@ with open(PROMPTS_PATH) as f:
     SOLVER_PROMPT = prompts['SOLVER_PROMPT']
     TOOLS_PROMPT = prompts['TOOLS_PROMPT']
     EXTRACTOR_PROMPT = prompts['EXTRACTOR_PROMPT']
+    DIRECT_PROMPT = prompts['DIRECT_PROMPT']
+
 
 class Node:
     """Basic node class"""
     def __init__(self):
         raise NotImplementedError
 
-    def run (self, inputs):
+    def run(self, inputs):
         raise NotImplementedError
 
 
 class LLMNode(Node):
     """A node that is based on an LLM"""
-    def __init__(self, model):
-        self.model = model
-        self.system_tag = model.system_tag
-        self.user_tag = model.user_tag
-        self.ai_tag = model.ai_tag
+    def __init__(self, lm_wrapper):
+        self.lm_wrapper = lm_wrapper
+        self.system_tag = lm_wrapper.system_tag
+        self.user_tag = lm_wrapper.user_tag
+        self.ai_tag = lm_wrapper.ai_tag
         self.stops = ['.', '\n']
 
     def call_llm(self, prompt):
-        """Calls the underlying LLM with the given inputs
+        """
+        Calls the underlying LLM with the given inputs
         Parameters:
         ------------
         prompt: str
@@ -49,14 +54,14 @@ class LLMNode(Node):
         response: str
             LLM response
         """
-        response = self.model.generate(prompt, self.stops)
+        response = self.lm_wrapper.generate(prompt, self.stops)
         return response
 
 
 class Planner(LLMNode):
     """Planner node for making plans within the PWS framework"""
-    def __init__(self, model):
-        super().__init__(model)
+    def __init__(self, lm_wrapper):
+        super().__init__(lm_wrapper)
         self.stops = ['\n\n']
         self.prefix = PLANNER_PROMPT['prefix']
         self.suffix = PLANNER_PROMPT['suffix']
@@ -67,7 +72,8 @@ class Planner(LLMNode):
         self.tool_call_regex = re.compile(tool_call_pattern)
 
     def run(self, task, examples):
-        """Generate plans for the given task, examples and tools
+        """
+        Generate plans for the given task, examples and tools
         Parameters:
         ------------
         task: str
@@ -84,11 +90,13 @@ class Planner(LLMNode):
         response = self.call_llm(prompt)
         plans, tool_calls = self.parse_response(response)
         planner_response = {'plans': plans, 'tool_calls': tool_calls,
-                            'text':response}
+                            'text': response}
         return planner_response
 
     def generate_prompt(self, task, examples):
-        """Generates a planner prompt for the given task, examples and tools
+        """
+        Generates a planner prompt for the given task, examples and
+        tools
         Parameters:
         ------------
         task: str
@@ -117,7 +125,9 @@ class Planner(LLMNode):
         return prompt
 
     def parse_response(self, response):
-        """Parse the planner response and return plans and evidences dictionary
+        """
+        Parse the planner response and return plans and evidences
+        dictionary
         Parameters:
         ------------
         response: str
@@ -128,7 +138,8 @@ class Planner(LLMNode):
         plans: list(str)
             List that contains the plans
         tool_calls : dict(str:str)
-            Tool call dict conatining evidences and associated tool calls
+            Tool call dict conatining evidences and associated tool
+            calls
         """
         plans = self.plan_regex.findall(response)
         tool_calls = {tool_call[0]: (tool_call[1], tool_call[2])
@@ -142,7 +153,8 @@ class WikipediaWorker(Node):
         pass
 
     def run(self, inputs):
-        """Searches Wikipedia for the given inputs and returns the first
+        """
+        Searches Wikipedia for the given inputs and returns the first
         2000 characters of the first page in the search results
         Parameters:
         ------------
@@ -158,12 +170,12 @@ class WikipediaWorker(Node):
             try:
                 pages = wikipedia.search(inputs[:300], results=1)
                 break
-            except:
+            except wikipedia.exceptions.WikipediaException:
                 time.sleep(1)
         try:
             evidence = wikipedia.page(pages[0], auto_suggest=False).content
             evidence = evidence[:2000]
-        except:
+        except wikipedia.exceptions.DisambiguationError:
             evidence = "No evidence found."
 
         return evidence
@@ -172,7 +184,8 @@ class WikipediaWorker(Node):
 class LLMWorker(LLMNode):
     """LLM node to be used for worker calls"""
     def run(self, inputs):
-        """Run the LLM as a tool call
+        """
+        Run the LLM as a tool call
         Parameters:
         ------------
         inputs: str
@@ -184,10 +197,11 @@ class LLMWorker(LLMNode):
             Cleaned response from the tool call
         """
         # Truncate input if necessary
-        tokens = self.model.tokenizer(inputs)['input_ids']
+        tokens = self.lm_wrapper.tokenizer(inputs)['input_ids']
         if len(tokens) > 2000:
-            inputs = self.model.tokenizer.decode(tokens[:2000],
-                                                 skip_special_tokens=True)
+            inputs = self.lm_wrapper.tokenizer.decode(
+                tokens[:2000], skip_special_tokens=True
+            )
         prompt = self.system_tag
         prompt += "Directly answer the following question with no extra words."
         prompt += f"\n\n{self.user_tag}{inputs.strip()}\n\n{self.ai_tag}"
@@ -198,12 +212,13 @@ class LLMWorker(LLMNode):
 
 class Worker(Node):
     """Worker node that calls appropriate workers for each tool call"""
-    def __init__(self, model):
+    def __init__(self, lm_wrapper):
         self.wiki_worker = WikipediaWorker()
-        self.llm_worker = LLMWorker(model)
+        self.llm_worker = LLMWorker(lm_wrapper)
 
     def run(self, inputs):
-        """Faciliates all tool calls and returns evidences
+        """
+        Faciliates all tool calls and returns evidences
         Parameters:
         ------------
         inputs: dict(str:(str, str))
@@ -212,8 +227,8 @@ class Worker(Node):
         Returns:
         ------------
         evidences: dict(str:str)
-            A dictinary of evidence variables and the outputs of the associated
-            tool calls
+            A dictinary of evidence variables and the outputs of the
+            associated tool calls
         """
         evidences = {}
         for e, (tool, tool_input) in inputs.items():
@@ -238,13 +253,14 @@ class Worker(Node):
 
 class Solver(LLMNode):
     """Solver node that solves tasks for given plans and evidences"""
-    def __init__(self, model):
-        super().__init__(model)
+    def __init__(self, lm_wrapper):
+        super().__init__(lm_wrapper)
         self.prefix = SOLVER_PROMPT['prefix']
         self.suffix = SOLVER_PROMPT['suffix']
 
     def run(self, task, plans, evidences):
-        """Solve the task based on the given plans and evidences
+        """
+        Solve the task based on the given plans and evidences
         Parameters:
         ------------
         task: str
@@ -274,9 +290,10 @@ class Solver(LLMNode):
         output = self.call_llm(prompt)
         return output
 
+
 class Extractor(LLMNode):
-    def __init__(self, model):
-        super().__init__(model)
+    def __init__(self, lm_wrapper):
+        super().__init__(lm_wrapper)
         self.prefix = EXTRACTOR_PROMPT['prefix']
 
     def __call__(self, statement, question):
@@ -285,3 +302,70 @@ class Extractor(LLMNode):
         prompt += f"Question: {question}\n{self.ai_tag}"
         output = self.call_llm(prompt)
         return output
+
+
+class DirectPrompter(LLMNode):
+    def __init__(self, lm_wrapper):
+        super().__init__(lm_wrapper)
+        self.prefix = DIRECT_PROMPT['prefix']
+        self.extractor = Extractor(lm_wrapper)
+
+    def __call__(self, question,):
+        prompt = f"{self.system_tag}{self.prefix}\n"
+        prompt += f"{self.user_tag}{question}\n{self.ai_tag}"
+        statement = self.call_llm(prompt)
+        output = self.extractor(statement, question)
+        return output
+
+
+class PWS:
+    """ Planner Worker Solver Framework"""
+    def __init__(self, lm_wrapper):
+        self.planner = Planner(lm_wrapper=lm_wrapper)
+        self.worker = Worker(lm_wrapper=lm_wrapper)
+        self.solver = Solver(lm_wrapper=lm_wrapper)
+        self.extractor = Extractor(lm_wrapper=lm_wrapper)
+
+    def run(self, task, examples, verbose=False, use_extractor=False):
+        """
+        Run the PWS on a given task based on provided examples
+        Parameters:
+        ------------
+        task: str
+            Task for which the PWS is to be run
+        examples: list(str)
+            Examples related to the task for the fewshot prompt
+        verbose: bool, default=False
+            If True, responses from intermediate nodes are also returned
+
+        Returns:
+        ------------
+        pws_response: dict(str:obj)
+            PWS response contains the output and time elapsed
+            If verbose responses from intermediate nodes are also
+            returned
+        """
+
+        st = time.time()
+        # Plan
+        planner_response = self.planner.run(task, examples)
+        plans = planner_response["plans"]
+        tool_calls = planner_response["tool_calls"]
+
+        # Work
+        evidences = self.worker.run(tool_calls)
+
+        # Solve
+        output = self.solver.run(task, plans, evidences)
+
+        wall_time = time.time() - st
+
+        pws_response = {"output": output,
+                        "wall_time": wall_time}
+
+        if verbose:
+            pws_response["planner_response"] = planner_response
+            pws_response["worker_response"] = evidences
+        if use_extractor:
+            pws_response['extracted_output'] = self.extractor(output, task)
+        return pws_response
