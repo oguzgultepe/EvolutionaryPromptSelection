@@ -2,24 +2,35 @@ import json
 import math
 import os
 import string
-import time
+import sys
 
+import datasets
 import pinecone
 import torch
+import transformers
 
-from accelerate import Accelerator, notebook_launcher
-from datasets import load_dataset
+from accelerate import Accelerator
 from sentence_transformers import SentenceTransformer
-from transformers import GenerationConfig
+from transformers import LlamaForCausalLM, LlamaTokenizer, GenerationConfig
 from tqdm.auto import tqdm
 
-from utils import LanguageModel, EPS, PWS
-from nodes import Extractor
+# Add EPS dir to sys.path to import functions from EPS/src/
+# Looks ugly and breaks PEP8 (E402)
+# Unfortunately, there seems to be no better alternative
+EPS_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
+sys.path.append(os.path.dirname(EPS_DIR))
 
-with open('secrets.json', 'r') as f:
+from EPS.src.nodes import Extractor, PWS  # noqa: E402
+from EPS.src.utils import LMWrapper, EPS  # noqa: E402
+
+with open('../secrets.json', 'r') as f:
     secrets = json.load(f)
 
-### Define Global Variables
+# Define Global Variables
 PINECONE_API_KEY = secrets['PINECONE_API_KEY']
 PINECONE_ENV = secrets['PINECONE_ENVIRONMENT']
 INDEX_NAME = 'plans'
@@ -38,7 +49,7 @@ AI_TAG = "### Assistant:\n"
 TEMPERATURE = 0.01
 TOP_K = 50
 TOP_P = 0.9
-REPETITION_PENALTY= 1.0
+REPETITION_PENALTY = 1.0
 MAX_NEW_TOKENS = 256
 
 DATASET_NAME = "trivia_qa"
@@ -49,30 +60,50 @@ BATCH_SIZE = 100
 RESULTS_DIR = 'results/'
 
 
-### Define helper functions
-sanitize = lambda text: text.strip().lower().translate(
-    str.maketrans('', '', string.punctuation)
-)
-get_path = lambda b_id: f"{RESULTS_DIR}results_batch_{b_id}.json"
+# Define helper functions
+def sanitize(text):
+    return text.strip().lower().translate(
+        str.maketrans('', '', string.punctuation)
+    )
 
-### Define the main training function
+
+def get_path(b_id):
+    return f"{RESULTS_DIR}results_batch_{b_id}.json"
+
+
+# Define the main training function
 def main():
     # Initialize accelerator
     accelerator = Accelerator(mixed_precision="fp16")
     accelerator.print('Accelerator initialized...')
-    # Initialize the database connection
-    accelerator.print('Initializing database connections...')
-    pinecone.init(
-        api_key=PINECONE_API_KEY,
-        environment=PINECONE_ENV
+    process_id = accelerator.process_index
+    num_processes = accelerator.num_processes
+
+    # Silence all but the main process
+    if not accelerator.is_main_process:
+        datasets.logging.disable_progress_bar()
+        transformers.logging.disable_progress_bar()
+
+    # Load the language model and initialize related components
+    # Get available GPU memory
+    cuda_per_proc = int(torch.cuda.device_count() / num_processes)
+    max_memory = {}
+    for i in range(cuda_per_proc):
+        device_id = process_id * cuda_per_proc + i
+        device_memory = torch.cuda.get_device_properties(
+            device_id
+        ).total_memory
+        # Leave 10% free for generation overhead
+        max_memory[device_id] = round(device_memory * 0.9)
+    accelerator.print(
+        f"Loading {MODEL_PATH} {'in 8bit' if LOAD_IN_8BIT else ''}..."
     )
-    index = pinecone.GRPCIndex(INDEX_NAME)
-    # Load the dataset, use main_process_first to download only once
-    accelerator.print('Loading the dataset...')
-    with accelerator.main_process_first():
-        dataset = load_dataset(DATASET_NAME, 'rc.nocontext')
-    # Initialize the models
-    accelerator.print('Initializing the LLMs...')
+    with accelerator.main_process_first():  # Download only once
+        tokenizer = LlamaTokenizer.from_pretrained(MODEL_PATH)
+        model = LlamaForCausalLM.from_pretrained(
+            MODEL_PATH, torch_dtype=torch.float16, device_map='auto',
+            load_in_8bit=LOAD_IN_8BIT, max_memory=max_memory
+        )
     generation_config = GenerationConfig(
         do_sample=True,
         temperature=TEMPERATURE,
@@ -81,36 +112,43 @@ def main():
         repetition_penalty=REPETITION_PENALTY,
         max_new_tokens=MAX_NEW_TOKENS
     )
-    # Load the LLM, use main_process_first to download only once
-    with accelerator.main_process_first():
-        model = LanguageModel(
-            MODEL_PATH, generation_config=generation_config,
-            device_map=accelerator.device, load_in_8bit=LOAD_IN_8BIT,
-            system_tag=SYSTEM_TAG, user_tag=USER_TAG, ai_tag=AI_TAG
-        )
-    # Load the embedding model, use main_process_first to download only once
-    accelerator.print('Initializing the embedding models...')
-    with accelerator.main_process_first():
-        embedding_model = SentenceTransformer(EMBEDDING_MODEL,
-                                              device=accelerator.device)
+    lm_wrapper = LMWrapper(
+        model, tokenizer, generation_config,
+        system_tag=SYSTEM_TAG, user_tag=USER_TAG, ai_tag=AI_TAG
+    )
+    agent = PWS(lm_wrapper)
+    extractor = Extractor(lm_wrapper)
+
     # Initialize the evolutionary prompter
-    accelerator.print('Initializing prompters...')
+    accelerator.print("Initializing database connection...")
+    pinecone.init(
+        api_key=PINECONE_API_KEY,
+        environment=PINECONE_ENV
+    )
+    index = pinecone.GRPCIndex(INDEX_NAME)
+    accelerator.print("Initializing embedding models...")
+    with accelerator.main_process_first():  # Download only once
+        device = f"cuda:{process_id * cuda_per_proc}"
+        embedding_model = SentenceTransformer(
+            EMBEDDING_MODEL, device=device
+        )
+    accelerator.print("Initializing evolutionary prompter...")
     prompter = EPS(index, embedding_model)
-    # Initialize the agent and the extractor
-    accelerator.print('Initializing agents...')
-    agent = PWS(model)
-    extractor = Extractor(model)
+
+    # Data preparation
+    accelerator.print('Preparing the dataset...')
+    with accelerator.main_process_first():  # Download only once
+        dataset = datasets.load_dataset(DATASET_NAME, 'rc.nocontext')
     # Breakdown data to chunks
     accelerator.print('Chunking data...')
-    process_id = accelerator.process_index
-    num_processes = accelerator.num_processes
     dataset_size = dataset['train'].num_rows
     chunk_size = int(math.ceil(dataset_size / num_processes))
     data_start = process_id * chunk_size
     data_end = data_start + chunk_size
     chunk = dataset['train'][data_start: data_end]
     data = zip(chunk['question'], chunk['answer'])
-    # Initilize loop variables 
+
+    # Initilize loop variables
     accelerator.print('Starting training loop...')
     batch_id = process_id
     batch_offset = num_processes
@@ -145,10 +183,13 @@ def main():
                 em = True
             else:
                 em = False
-        instructions = [{'id': entry['id'],
-                         'similarity': entry['score']
-                        }
-                        for entry in selection]
+        instructions = [
+            {
+                'id': entry['id'],
+                'similarity': entry['score']
+            }
+            for entry in selection
+        ]
         results.append({'em': em, 'instructions': instructions})
         # In case of an exact match, add the new plans to the index
         # and increment the scores of the selected instructions
@@ -157,12 +198,13 @@ def main():
             tool_calls = response['planner_response']['tool_calls'].values()
             tools = list(set([tool for (tool, _) in tool_calls]))
             # Metadata for the new plans
-            new_entry_metadata = {'question': question,
-                                  'plan': response['planner_response']['text'],
-                                  'tools': tools,
-                                  'dataset_name': DATASET_NAME,
+            new_entry_metadata = {
+                'question': question,
+                'plan': response['planner_response']['text'],
+                'tools': tools,
+                'dataset_name': DATASET_NAME,
             }
-            # Add new plans to the index 
+            # Add new plans to the index
             prompter.upsert_entry(new_entry_metadata)
             # Increment scores of the selected instructions
             prompter.increment_score([entry['id'] for entry in selection])

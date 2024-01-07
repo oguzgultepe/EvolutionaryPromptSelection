@@ -5,37 +5,38 @@ from datasets import load_dataset
 from sentence_transformers import SentenceTransformer
 from tqdm.auto import tqdm
 
-regex_pattern = r'(.*)\[input\]'
-regex = re.compile(regex_pattern)
-
-dataset_name = "rewoo/planner_instruction_tuning_2k"
-dataset = load_dataset(dataset_name)
-seed_data = dataset['train']
-
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-
-with open('secrets.json', 'r') as f:
+with open('../secrets.json', 'r') as f:
     secrets = json.load(f)
 
 PINECONE_API_KEY = secrets['PINECONE_API_KEY']
 PINECONE_ENV = secrets['PINECONE_ENVIRONMENT']
+INDEX_NAME = 'plans'
+
+EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
+
+REGEX_PATTERN = r'(.*)\[input\]'
+DATASET_NAME = "rewoo/planner_instruction_tuning_2k"
+
+embedding_model = SentenceTransformer(EMBEDDING_MODEL)
 
 pinecone.init(
     api_key=PINECONE_API_KEY,
     environment=PINECONE_ENV
 )
 
-index_name = 'plans'
+regex = re.compile(REGEX_PATTERN)
+dataset = load_dataset(DATASET_NAME)
+seed_data = dataset['train']
 
 # only create index if it doesn't exist
-if index_name not in pinecone.list_indexes():
+if INDEX_NAME not in pinecone.list_indexes():
     pinecone.create_index(
-        name=index_name,
+        name=INDEX_NAME,
         dimension=embedding_model.get_sentence_embedding_dimension(),
         metric='cosine'
     )
 
-index = pinecone.GRPCIndex(index_name)
+index = pinecone.GRPCIndex(INDEX_NAME)
 
 size = seed_data.num_rows
 batch_size = 128
@@ -46,18 +47,17 @@ for i in tqdm(range(0, size, batch_size)):
     ids = []
     metadatas = []
     for x in range(i, i_end):
-        # create IDs 
+        # create IDs
         ids.append(str(x))
         # create metadata
         instance = seed_data[x]
         metadatas.append({'question': instance['input'],
                           'plan': instance['output'],
                           'tools': regex.findall(instance['instruction']),
-                          'dataset_name': dataset_name,
+                          'dataset_name': DATASET_NAME,
                           'score': 1,
                           'id': x})
 
     embeddings = embedding_model.encode(seed_data[i:i_end]['input'])
     records = zip(ids, embeddings, metadatas)
     index.upsert(vectors=records)
-

@@ -4,6 +4,7 @@ import math
 import os
 import re
 import string
+import sys
 
 import datasets
 import pinecone
@@ -15,10 +16,20 @@ from sentence_transformers import SentenceTransformer
 from transformers import LlamaForCausalLM, LlamaTokenizer, GenerationConfig
 from tqdm.auto import tqdm
 
-from nodes import DirectPrompter, PWS
-from utils import LMWrapper, EPS
+# Add EPS dir to sys.path to import functions from EPS/src/
+# Looks ugly and breaks PEP8 (E402)
+# Unfortunately, there seems to be no better alternative
+EPS_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.abspath(__file__)
+    )
+)
+sys.path.append(os.path.dirname(EPS_DIR))
 
-with open('secrets.json', 'r') as f:
+from EPS.src.nodes import DirectPrompter, PWS  # noqa: E402
+from EPS.src.utils import LMWrapper, EPS  # noqa: E402
+
+with open('../secrets.json', 'r') as f:
     secrets = json.load(f)
 
 # Define Global Variables
